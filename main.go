@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"go/ast"
 	"io/fs"
 	"log"
 	"os"
@@ -198,7 +199,84 @@ func (w *walker) walk(path string, d fs.DirEntry, err error) error {
 }
 
 func go2class(proj *modfile.Project, filename string) error {
+	fmt.Println(filename)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filename, nil, parser.ParseComments|parser.AllErrors)
+	if err != nil {
+		return err
+	}
+	ctx := newContext(fset, proj)
+	ctx.parseFile(f)
+	ctx.simply()
+	// var buf bytes.Buffer
+	// err = goformat.Node(&buf, fset, f)
+	// if err != nil {
+	// 	return err
+	// }
+	// fmt.Println(buf.String())
 	return nil
+}
+
+type class struct {
+	spec *ast.TypeSpec
+	typ  *ast.StructType
+	fns  []*ast.FuncDecl
+}
+
+type context struct {
+	fset      *token.FileSet
+	proj      *modfile.Project
+	classes   map[string]*class
+	vars      []*ast.ValueSpec
+	imports   []*ast.GenDecl
+	otherDecl []*ast.GenDecl
+	otherFunc []*ast.FuncDecl
+}
+
+func newContext(fset *token.FileSet, proj *modfile.Project) *context {
+	return &context{fset: fset, proj: proj, classes: make(map[string]*class)}
+}
+
+func (c *context) parseFile(f *ast.File) {
+	for _, decl := range f.Decls {
+		if d, ok := decl.(*ast.GenDecl); ok {
+			if d.Tok == token.IMPORT {
+				c.imports = append(c.imports, d)
+			}
+			if d.Tok == token.TYPE {
+				if spec, ok := d.Specs[0].(*ast.TypeSpec); ok {
+					if st, ok := spec.Type.(*ast.StructType); ok {
+						c.classes[spec.Name.Name] = &class{spec, st, nil}
+						continue
+					}
+				}
+			}
+			c.otherDecl = append(c.otherDecl, d)
+		}
+	}
+	for _, decl := range f.Decls {
+		if d, ok := decl.(*ast.FuncDecl); ok {
+			if d.Name.Name == "main" {
+				continue
+			}
+			if d.Recv != nil && len(d.Recv.List) == 1 {
+				typ := d.Recv.List[0].Type
+				if star, ok := typ.(*ast.StarExpr); ok {
+					typ = star.X
+				}
+				if name, ok := typ.(*ast.Ident); ok {
+					if cls, ok := c.classes[name.Name]; ok {
+						cls.fns = append(cls.fns, d)
+						continue
+					}
+				}
+			}
+			c.otherFunc = append(c.otherFunc, d)
+		}
+	}
+}
+
+func (c *context) simply() {
 }
 
 func report(err error) {
