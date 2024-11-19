@@ -48,7 +48,7 @@ var (
 	rootDir    = ""
 )
 
-func findProject(mod *gopmod.Module, filename string) (*modfile.Project, error) {
+func findModule(mod *gopmod.Module, filename string) (*modfile.Project, error) {
 	f, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
 	if err != nil {
 		return nil, err
@@ -69,6 +69,25 @@ func findProject(mod *gopmod.Module, filename string) (*modfile.Project, error) 
 	return nil, nil
 }
 
+func findProject(proj *modfile.Project, filename string) (bool, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
+	if err != nil {
+		return false, err
+	}
+	for _, im := range f.Imports {
+		path, err := strconv.Unquote(im.Path.Value)
+		if err != nil {
+			return false, err
+		}
+		for _, pkg := range proj.PkgPaths {
+			if pkg == path {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 type walker struct {
 	dirMap map[string]func(filename, ext string) (proj *modfile.Project, ok bool)
 }
@@ -76,6 +95,18 @@ type walker struct {
 func newWalker() *walker {
 	return &walker{dirMap: make(map[string]func(filename, ext string) (proj *modfile.Project, ok bool))}
 }
+
+var (
+	defaultSpxProj = &modfile.Project{
+		Ext:   ".spx",
+		Class: "Game",
+		Works: []*modfile.Class{{
+			Ext:   ".spx",
+			Class: "Sprite",
+		}},
+		PkgPaths: []string{"github.com/goplus/spx"},
+	}
+)
 
 func (w *walker) walk(path string, d fs.DirEntry, err error) error {
 	if err != nil {
@@ -88,25 +119,33 @@ func (w *walker) walk(path string, d fs.DirEntry, err error) error {
 		dir, _ := filepath.Split(path)
 		fn, ok := w.dirMap[dir]
 		if !ok {
-			if mod, err := gop.LoadMod(path); err == nil {
-				fn = func(filename string, ext string) (proj *modfile.Project, ok bool) {
-					switch ext {
-					case ".go":
-						proj, err := findProject(mod, filename)
+			var mod *gopmod.Module
+			mod, _ = gop.LoadMod(path)
+			fn = func(filename string, ext string) (*modfile.Project, bool) {
+				switch ext {
+				case ".go":
+					// find in gop.mod
+					if mod != nil {
+						proj, err := findModule(mod, filename)
 						if err != nil {
-							log.Println("parser import error", err)
+							log.Println("parser module error", err)
 							break
 						}
 						if proj != nil {
 							return proj, true
 						}
 					}
-					return
+					// find in default spx
+					ok, err := findProject(defaultSpxProj, filename)
+					if err != nil {
+						log.Println("find in project error", err)
+						break
+					}
+					if ok {
+						return defaultSpxProj, true
+					}
 				}
-			} else {
-				fn = func(filename string, ext string) (*modfile.Project, bool) {
-					return nil, false
-				}
+				return nil, false
 			}
 			w.dirMap[dir] = fn
 		}
