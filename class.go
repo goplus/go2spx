@@ -109,10 +109,16 @@ func (c *context) findClass(spec *ast.TypeSpec) (cls *class) {
 func (c *context) parseFile(f *ast.File) {
 	for _, decl := range f.Decls {
 		if d, ok := decl.(*ast.GenDecl); ok {
-			if d.Tok == token.IMPORT {
+			switch d.Tok {
+			case token.IMPORT:
 				c.imports = append(c.imports, d)
-			}
-			if d.Tok == token.TYPE {
+				continue
+			case token.CONST:
+				// skip const _ = true
+				if spec, ok := d.Specs[0].(*ast.ValueSpec); ok && spec.Names[0].Name == "_" {
+					continue
+				}
+			case token.TYPE:
 				if spec, ok := d.Specs[0].(*ast.TypeSpec); ok {
 					if cls := c.findClass(spec); cls != nil {
 						c.classes[spec.Name.Name] = cls
@@ -179,6 +185,17 @@ func (c *context) code(cls *class) string {
 		goformat.Node(&buf, c.fset, cls.vars)
 		buf.Write([]byte{'\n'})
 	}
+	// output others decls
+	if cls.proj {
+		for _, decl := range c.otherDecl {
+			goformat.Node(&buf, c.fset, decl)
+			buf.WriteByte('\n')
+		}
+		for _, decl := range c.otherFunc {
+			goformat.Node(&buf, c.fset, decl)
+			buf.WriteByte('\n')
+		}
+	}
 	var body *ast.BlockStmt
 	for _, fn := range cls.fns {
 		switch fn.Name.Name {
@@ -196,11 +213,11 @@ func (c *context) code(cls *class) string {
 			continue
 		}
 		goformat.Node(&buf, c.fset, fn)
-		buf.Write([]byte{'\n'})
+		buf.WriteByte('\n')
 	}
 	if body != nil {
 		goformat.Node(&buf, c.fset, body.List)
-		buf.Write([]byte{'\n'})
+		buf.WriteByte('\n')
 	}
 	// remove sched
 	data := strings.ReplaceAll(buf.String(), c.pkg+".Sched()", "")
