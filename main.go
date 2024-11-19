@@ -17,10 +17,8 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
-	"go/ast"
 	"io/fs"
 	"log"
 	"os"
@@ -32,18 +30,15 @@ import (
 	"github.com/goplus/mod/modfile"
 
 	"github.com/goplus/gop"
-	"github.com/goplus/gop/format"
 
-	goformat "go/format"
 	"go/parser"
 	"go/token"
-
-	xformat "github.com/goplus/gop/x/format"
 )
 
 var (
 	flagTest    = flag.Bool("t", false, "test if Go+ files are formatted or not.")
 	flagNotExec = flag.Bool("n", false, "prints commands that would be executed.")
+	flagOut     = flag.String("o", "", "set Go+ class output dir, empty to stdout.")
 )
 
 var (
@@ -52,80 +47,6 @@ var (
 	walkSubDir = false
 	rootDir    = ""
 )
-
-func gopfmt(path string, class, smart, mvgo bool) (err error) {
-	return nil
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var target []byte
-	if smart {
-		target, err = xformat.GopstyleSource(src, path)
-	} else {
-		if !mvgo && filepath.Ext(path) == ".go" {
-			fset := token.NewFileSet()
-			f, err := parser.ParseFile(fset, path, src, parser.ParseComments)
-			if err != nil {
-				return err
-			}
-			var buf bytes.Buffer
-			err = goformat.Node(&buf, fset, f)
-			if err != nil {
-				return err
-			}
-			target = buf.Bytes()
-		} else {
-			target, err = format.Source(src, class, path)
-		}
-	}
-	if err != nil {
-		return
-	}
-	if bytes.Equal(src, target) {
-		return
-	}
-	fmt.Println(path)
-	if *flagTest {
-		testErrCnt++
-		return nil
-	}
-	if mvgo {
-		newPath := strings.TrimSuffix(path, ".go") + ".gop"
-		if err = os.WriteFile(newPath, target, 0666); err != nil {
-			return
-		}
-		return os.Remove(path)
-	}
-	return writeFileWithBackup(path, target)
-}
-
-func writeFileWithBackup(path string, target []byte) (err error) {
-	dir, file := filepath.Split(path)
-	f, err := os.CreateTemp(dir, file)
-	if err != nil {
-		return
-	}
-	tmpfile := f.Name()
-	_, err = f.Write(target)
-	f.Close()
-	if err != nil {
-		return
-	}
-	err = os.Remove(path)
-	if err != nil {
-		return
-	}
-	return os.Rename(tmpfile, path)
-}
-
-type walker struct {
-	dirMap map[string]func(filename, ext string) (proj *modfile.Project, ok bool)
-}
-
-func newWalker() *walker {
-	return &walker{dirMap: make(map[string]func(filename, ext string) (proj *modfile.Project, ok bool))}
-}
 
 func findProject(mod *gopmod.Module, filename string) (*modfile.Project, error) {
 	f, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
@@ -146,6 +67,14 @@ func findProject(mod *gopmod.Module, filename string) (*modfile.Project, error) 
 		}
 	}
 	return nil, nil
+}
+
+type walker struct {
+	dirMap map[string]func(filename, ext string) (proj *modfile.Project, ok bool)
+}
+
+func newWalker() *walker {
+	return &walker{dirMap: make(map[string]func(filename, ext string) (proj *modfile.Project, ok bool))}
 }
 
 func (w *walker) walk(path string, d fs.DirEntry, err error) error {
@@ -171,7 +100,6 @@ func (w *walker) walk(path string, d fs.DirEntry, err error) error {
 						if proj != nil {
 							return proj, true
 						}
-					case ".gop":
 					}
 					return
 				}
@@ -186,9 +114,9 @@ func (w *walker) walk(path string, d fs.DirEntry, err error) error {
 		if proj, ok := fn(path, ext); ok {
 			procCnt++
 			if *flagNotExec {
-				fmt.Println("gop fmt", path)
+				fmt.Println("go2spx", path)
 			} else {
-				err = go2class(proj, path)
+				err = go2class(proj, dir, path)
 				if err != nil {
 					report(err)
 				}
@@ -198,7 +126,7 @@ func (w *walker) walk(path string, d fs.DirEntry, err error) error {
 	return err
 }
 
-func go2class(proj *modfile.Project, filename string) error {
+func go2class(proj *modfile.Project, dir string, filename string) error {
 	fmt.Println(filename)
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, filename, nil, parser.AllErrors)
@@ -207,199 +135,8 @@ func go2class(proj *modfile.Project, filename string) error {
 	}
 	ctx := newContext(fset, proj)
 	ctx.parseFile(f)
-	ctx.simply()
-	ctx.dump()
-	// var buf bytes.Buffer
-	// err = goformat.Node(&buf, fset, f)
-	// if err != nil {
-	// 	return err
-	// }
-	// fmt.Println(buf.String())
+	ctx.output(dir, *flagOut)
 	return nil
-}
-
-type class struct {
-	name string
-	cls  string
-	ext  string
-	vars *ast.GenDecl
-	fns  []*ast.FuncDecl
-	proj bool
-}
-
-type context struct {
-	fset      *token.FileSet
-	proj      *modfile.Project
-	pkg       string
-	classes   map[string]*class
-	imports   []*ast.GenDecl
-	otherDecl []*ast.GenDecl
-	otherFunc []*ast.FuncDecl
-}
-
-func newContext(fset *token.FileSet, proj *modfile.Project) *context {
-	var pkg string
-	if ar := strings.Split(proj.PkgPaths[0], "/"); len(ar) > 0 {
-		pkg = ar[len(ar)-1]
-	}
-	return &context{fset: fset, proj: proj, pkg: pkg, classes: make(map[string]*class)}
-}
-
-func typIdent(typ ast.Expr) (string, bool) {
-	if star, ok := typ.(*ast.StarExpr); ok {
-		typ = star.X
-	}
-	if sel, ok := typ.(*ast.SelectorExpr); ok {
-		if id, ok := typIdent(sel.X); ok {
-			return id + "." + sel.Sel.Name, true
-		}
-	}
-	if ident, ok := typ.(*ast.Ident); ok {
-		return ident.Name, true
-	}
-	return "", false
-}
-
-func (c *context) isClass(name string) (proj bool, cls string, ext string) {
-	if name == c.pkg+"."+c.proj.Class {
-		proj = true
-		cls = c.proj.Class
-		ext = c.proj.Ext
-		return
-	}
-	for _, work := range c.proj.Works {
-		if name == c.pkg+"."+work.Class {
-			cls = work.Class
-			ext = work.Ext
-			return
-		}
-	}
-	return
-}
-
-// find class in type spec
-func (c *context) findClass(spec *ast.TypeSpec) (cls *class) {
-	st, ok := spec.Type.(*ast.StructType)
-	if !ok {
-		return
-	}
-	for i, fs := range st.Fields.List {
-		if len(fs.Names) == 0 {
-			if name, ok := typIdent(fs.Type); ok {
-				proj, clsname, ext := c.isClass(name)
-				if i == 0 && clsname != "" {
-					cls = &class{proj: proj, cls: clsname, ext: ext}
-					if proj {
-						cls.name = "main"
-					} else {
-						cls.name = spec.Name.Name
-					}
-				}
-				continue
-			}
-		} else if cls != nil {
-			if cls.vars == nil {
-				cls.vars = &ast.GenDecl{Tok: token.VAR}
-			}
-			cls.vars.Specs = append(cls.vars.Specs, &ast.ValueSpec{Names: fs.Names, Type: fs.Type})
-		}
-	}
-	return
-}
-
-func (c *context) parseFile(f *ast.File) {
-	for _, decl := range f.Decls {
-		if d, ok := decl.(*ast.GenDecl); ok {
-			if d.Tok == token.IMPORT {
-				c.imports = append(c.imports, d)
-			}
-			if d.Tok == token.TYPE {
-				if spec, ok := d.Specs[0].(*ast.TypeSpec); ok {
-					if cls := c.findClass(spec); cls != nil {
-						c.classes[spec.Name.Name] = cls
-						continue
-					}
-				}
-			}
-			c.otherDecl = append(c.otherDecl, d)
-		}
-	}
-	for _, decl := range f.Decls {
-		if d, ok := decl.(*ast.FuncDecl); ok {
-			if d.Name.Name == "main" {
-				continue
-			}
-			if d.Recv != nil && len(d.Recv.List) == 1 {
-				typ := d.Recv.List[0].Type
-				if star, ok := typ.(*ast.StarExpr); ok {
-					typ = star.X
-				}
-				if name, ok := typ.(*ast.Ident); ok {
-					if cls, ok := c.classes[name.Name]; ok {
-						cls.fns = append(cls.fns, d)
-						continue
-					}
-				}
-			}
-			c.otherFunc = append(c.otherFunc, d)
-		}
-	}
-}
-
-func (c *context) simply() {
-	for _, cls := range c.classes {
-		for _, fn := range cls.fns {
-			fn.Recv = nil
-		}
-	}
-}
-
-func (c *context) dump() {
-	for _, cls := range c.classes {
-		code := c.code(cls)
-		fmt.Println("====", "class:", cls.name+cls.ext, "====")
-		fmt.Println(code)
-	}
-}
-
-func (c *context) code(cls *class) string {
-	var buf bytes.Buffer
-	if cls.vars != nil {
-		goformat.Node(&buf, c.fset, cls.vars)
-		buf.Write([]byte{'\n'})
-	}
-	var body *ast.BlockStmt
-	for _, fn := range cls.fns {
-		switch fn.Name.Name {
-		case "Main":
-			if !cls.proj {
-				body = fn.Body
-			}
-			continue
-		case "MainEntry":
-			if cls.proj {
-				body = fn.Body
-			}
-			continue
-		case "Classfname":
-			continue
-		}
-		goformat.Node(&buf, c.fset, fn)
-		buf.Write([]byte{'\n'})
-	}
-	if body != nil {
-		goformat.Node(&buf, c.fset, body.List)
-		buf.Write([]byte{'\n'})
-	}
-	// remove sched
-	data := strings.ReplaceAll(buf.String(), c.pkg+".Sched()", "")
-	code, err := xformat.GopstyleSource([]byte(data), cls.name+cls.ext)
-	if err != nil {
-		log.Panicln(err)
-	}
-	r := strings.NewReplacer("this.", "", c.pkg+".", "", "\n\n", "\n")
-	src := r.Replace(string(code))
-	return src
 }
 
 func report(err error) {
