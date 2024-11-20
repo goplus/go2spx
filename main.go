@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goplus/mod/gopmod"
 	"github.com/goplus/mod/modfile"
 
 	"github.com/goplus/gop"
@@ -48,26 +47,26 @@ var (
 	rootDir    = ""
 )
 
-func findModule(mod *gopmod.Module, filename string) (*modfile.Project, error) {
-	f, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
-	if err != nil {
-		return nil, err
-	}
-	for _, im := range f.Imports {
-		path, err := strconv.Unquote(im.Path.Value)
-		if err != nil {
-			return nil, err
-		}
-		for _, proj := range mod.Projects() {
-			for _, pkg := range proj.PkgPaths {
-				if pkg == path {
-					return proj, nil
-				}
-			}
-		}
-	}
-	return nil, nil
-}
+// func findModule(mod *gopmod.Module, filename string) (*modfile.Project, error) {
+// 	f, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	for _, im := range f.Imports {
+// 		path, err := strconv.Unquote(im.Path.Value)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		for _, proj := range mod.Projects() {
+// 			for _, pkg := range proj.PkgPaths {
+// 				if pkg == path {
+// 					return proj, nil
+// 				}
+// 			}
+// 		}
+// 	}
+// 	return nil, nil
+// }
 
 func findProject(proj *modfile.Project, filename string) (bool, error) {
 	f, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
@@ -119,30 +118,22 @@ func (w *walker) walk(path string, d fs.DirEntry, err error) error {
 		dir, _ := filepath.Split(path)
 		fn, ok := w.dirMap[dir]
 		if !ok {
-			var mod *gopmod.Module
-			mod, _ = gop.LoadMod(path)
+			spxProj := defaultSpxProj
+			if mod, err := gop.LoadMod(path); err == nil {
+				if c, ok := mod.LookupClass(".spx"); ok {
+					spxProj = c
+				}
+			}
 			fn = func(filename string, ext string) (*modfile.Project, bool) {
 				switch ext {
 				case ".go":
-					// find in gop.mod
-					if mod != nil {
-						proj, err := findModule(mod, filename)
-						if err != nil {
-							log.Println("parser module error", err)
-							break
-						}
-						if proj != nil {
-							return proj, true
-						}
-					}
-					// find in default spx
-					ok, err := findProject(defaultSpxProj, filename)
+					ok, err := findProject(spxProj, filename)
 					if err != nil {
 						log.Println("find in project error", err)
 						break
 					}
 					if ok {
-						return defaultSpxProj, true
+						return spxProj, true
 					}
 				}
 				return nil, false
