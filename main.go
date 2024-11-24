@@ -19,6 +19,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"log"
 	"os"
@@ -26,12 +28,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goplus/mod/modfile"
-
+	"github.com/goplus/go2spx/class"
 	"github.com/goplus/gop"
-
-	"go/parser"
-	"go/token"
+	"github.com/goplus/mod/modfile"
 )
 
 var (
@@ -163,9 +162,12 @@ func go2class(proj *modfile.Project, dir string, filename string) error {
 	if err != nil {
 		return err
 	}
-	ctx := newContext(fset, proj)
-	ctx.parseFile(f)
-	ctx.output(dir, *flagOut)
+	ctx := class.NewContext(fset, proj)
+	ctx.ParseFile(f)
+	err = ctx.Output(dir, *flagOut)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
